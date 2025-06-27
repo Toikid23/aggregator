@@ -2,6 +2,8 @@
 
 import os
 import pytz
+import undetected_chromedriver as uc
+from selenium.webdriver.chrome.options import Options 
 from datetime import datetime, timezone
 from flask import Flask, render_template, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
@@ -77,7 +79,7 @@ def index():
     all_sources = sorted([s[0] for s in all_sources_tuples])
     return render_template('index.html', jobs=jobs, all_sources=all_sources, selected_sources=sources_filter, search_query=search_query)
 
-# app.py (uniquement la fonction get_job_details restaurée)
+# app.py
 
 @app.route('/job/<int:job_id>/details')
 def get_job_details(job_id):
@@ -85,42 +87,72 @@ def get_job_details(job_id):
     if not job:
         return jsonify({'error': 'Job not found'}), 404
     
-    if job.description:
+    MIN_FULL_DESCRIPTION_LENGTH = 500
+    if job.description and len(job.description) > MIN_FULL_DESCRIPTION_LENGTH:
         return jsonify({'description': job.description})
+    
+    source = job.source
+    wait_selector = None
+    description_selector = None # Sélecteur pour l'extraction
 
-    if job.source != 'Crypto Jobs List':
-        return jsonify({'description': '<p>Détails non disponibles pour cette source.</p>'})
+    if source == 'Indeed':
+        wait_selector = '#jobDescriptionText, #mosaic-vjJobDetails'
+        description_selector = wait_selector
+    elif source == 'Glassdoor':
+        # On attend l'en-tête de la description
+        wait_selector = "header[data-test='job-details-header']"
+        # On extrait le conteneur de la description
+        description_selector = "div[class*='JobDetails_jobDescription']"
+    # ... autres sites ...
+    
+    if not wait_selector:
+        return jsonify({'description': '<p>Scraper non défini pour cette source.</p>'})
 
     driver = None
-    description = "<p>Détails non trouvés.</p>"
+    description = "<p>Détails non trouvés lors du scraping.</p>"
     try:
-        print(f"API: Lancement du scraper pour les détails de l'offre ID {job_id}...")
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=chrome_options)
+        if source in ['Indeed', 'Glassdoor']:
+            profile_folder = "chrome_profile_indeed" if source == 'Indeed' else "chrome_profile_glassdoor"
+            options = uc.ChromeOptions()
+            profile_path = os.path.abspath(profile_folder)
+            options.add_argument(f'--user-data-dir={profile_path}')
+            options.add_argument('--profile-directory=Default')
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--window-size=800,600")
+            driver = uc.Chrome(options=options, use_subprocess=True, version_main=137)
+        else:
+            std_options = Options()
+            std_options.add_argument("--headless")
+            std_options.add_argument("--no-sandbox")
+            driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=std_options)
         
         driver.get(job.link)
         
-        # On utilise le sélecteur qui marchait pour la description
-        wait_selector = "div[class*='JobView_description']"
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, wait_selector))
+        print(f"API: Attente de la visibilité de '{wait_selector}'...")
+        WebDriverWait(driver, 1).until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, wait_selector))
         )
-        time.sleep(1)
+        print("API: Élément d'attente trouvé !")
 
         soup = BeautifulSoup(driver.page_source, 'html.parser')
-        
-        description_element = soup.select_one(wait_selector)
+        description_element = soup.select_one(description_selector)
+
         if description_element:
-            # On récupère bien le HTML interne et non le texte
+            for tag in description_element.find_all(True):
+                if 'class' in tag.attrs: del tag.attrs['class']
+                if 'style' in tag.attrs: del tag.attrs['style']
             description = str(description_element)
             job.description = description
             db.session.commit()
-            print(f"API: Description trouvée et sauvegardée pour l'offre ID {job_id}.")
+            print(f"API: Description pour l'offre {job_id} ({source}) sauvegardée.")
+        else:
+            print(f"API: Élément de description ('{description_selector}') introuvable après l'attente.")
         
     except Exception as e:
-        print(f"API: Erreur lors du scraping des détails pour l'offre ID {job_id}: {e}")
+        print(f"API: Erreur scraping détails pour l'offre {job_id} ({source}): {e}")
+        description = f"<p>Une erreur est survenue.</p>"
     finally:
         if driver:
             driver.quit()
@@ -132,3 +164,31 @@ if __name__ == '__main__':
     with app.app_context():
         db.create_all()
     app.run(debug=True)
+
+
+
+    # if source == 'Crypto Jobs List':
+    #     wait_selector = "div[class*='JobView_description']"
+    
+    # elif source == 'Welcome to the Jungle':
+    #     wait_selector = "div[data-testid='job-section-description']"
+    
+    # elif source == 'Web3.career':
+    #     wait_selector = 'div.text-dark-grey-text'
+
+    # elif source == 'Crypto Careers':
+    #     wait_selector = 'div.job-body'
+
+    # elif source == 'Cryptocurrency Jobs':
+    #     wait_selector = 'div.prose'
+
+    # elif source == 'Remote3':
+    #     wait_selector = 'div[class^="RemoteJobs_jobDescription"]'
+
+    # # --- SÉLECTEUR CORRIGÉ POUR LABORX ---
+    # elif source == 'LaborX':
+    #     # On utilise le sélecteur que vous avez confirmé être le bon.
+    #     wait_selector = 'section.section-description'
+
+    # elif source == 'Hellowork':
+    #     wait_selector = 'div[class*="lg:tw-col-span-8"] div.tw-flex.tw-flex-col'
