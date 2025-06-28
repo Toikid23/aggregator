@@ -1,8 +1,6 @@
 import time
 import os
-import locale
 import re
-import random
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
@@ -13,7 +11,6 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium_stealth import stealth 
 import undetected_chromedriver as uc
 import urllib.parse
 
@@ -21,7 +18,23 @@ from app import db, Job, app
 
 # --- FONCTION UTILITAIRE STABLE ---
 def save_job_to_db(job_data):
-    exists = Job.query.filter_by(link=job_data['link']).first()
+    # On compare les liens sans les paramètres de tracking pour éviter les faux doublons
+    link_to_check = job_data['link'].split('?')[0]
+
+
+
+    if "indeed.com" in link_to_check:
+        match = re.search(r'jk=([a-f0-9]+)', link_to_check)
+        if match:
+            # On cherche n'importe quelle offre ayant ce même 'jk'
+            job_key = match.group(1)
+            exists = Job.query.filter(Job.link.like(f"%jk={job_key}%")).first()
+        else:
+            # Si pas de 'jk', on fait une recherche normale
+            exists = Job.query.filter_by(link=link_to_check).first()
+    else:
+        # Pour les autres sites, on garde la méthode simple
+        exists = Job.query.filter_by(link=link_to_check).first()
     if not exists:
         try:
             new_job = Job(
@@ -34,7 +47,6 @@ def save_job_to_db(job_data):
                 salary=job_data.get('salary'),
                 tags=job_data.get('tags'),
                 logo_url=job_data.get('logo_url'),
-
                 description=job_data.get('description') 
             )
             db.session.add(new_job)
@@ -45,168 +57,179 @@ def save_job_to_db(job_data):
             return False
     return False
 
-# scraper.py (uniquement la fonction scrape_wttj)
-
+# --- Welcome to the Jungle (avec arrêt intelligent) ---
 def scrape_wttj():
     print("\n--- Début du scraping sur Welcome to the Jungle ---")
-    NUM_PAGES_TO_SCRAPE = 3
+    NUM_PAGES_TO_SCRAPE = 10
+    DUPLICATE_THRESHOLD = 10
     BASE_URL = "https://www.welcometothejungle.com/fr/jobs?aroundQuery=worldwide&sortBy=mostRecent&refinementList%5Bremote%5D%5B%5D=fulltime&page={}"
+    
     driver = None
-    new_jobs_count = 0
+    all_jobs_data = []
+    stop_scraping_site = False
+
     try:
         chrome_options = Options()
         chrome_options.add_argument("--headless")
         chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
         driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=chrome_options)
-        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        
+        with app.app_context():
+            processed_links = {job.link for job in Job.query.filter_by(source='Welcome to the Jungle').with_entities(Job.link).all()}
 
         for page_num in range(1, NUM_PAGES_TO_SCRAPE + 1):
-            current_url = BASE_URL.format(page_num)
-            print(f"\nWTTJ : Traitement de la page {page_num}/{NUM_PAGES_TO_SCRAPE}...")
-            driver.get(current_url)
+            if stop_scraping_site:
+                print("  [INFO] Seuil de doublons atteint. Arrêt pour WTTJ.")
+                break
 
+            current_url = BASE_URL.format(page_num)
+            print(f"WTTJ : Traitement de la page {page_num}/{NUM_PAGES_TO_SCRAPE}...")
+            driver.get(current_url)
 
             job_cards_selector = "li[data-testid='search-results-list-item-wrapper']"
             try:
-                WebDriverWait(driver, 5).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, job_cards_selector)))
-                
+                WebDriverWait(driver, 15).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, job_cards_selector)))
             except Exception:
                 print(f"WTTJ : Aucune offre sur la page {page_num}. Arrêt.")
                 break
 
             soup = BeautifulSoup(driver.page_source, "html.parser")
-            job_cards = soup.find_all("li", attrs={"data-testid": "search-results-list-item-wrapper"})
+            job_cards = soup.select(job_cards_selector)
             if not job_cards: break
 
-            with app.app_context():
-                page_new_jobs_count = 0
-                for card in job_cards:
-                    # Logique d'extraction de la liste (titre, entreprise, lien, etc.)
-                    # SANS AUCUN CLIC NI SCRAPING DE DÉTAILS
-                    time_element = card.find("time")
-                    if not time_element: continue
-                    published_at = datetime.fromisoformat(time_element['datetime'].replace('Z', '+00:00'))
+            consecutive_duplicates = 0
+            for card in job_cards:
+                all_links = card.select("a[href*='/jobs/']")
+                if not all_links: continue
+                title_link_element = all_links[1] if len(all_links) > 1 else all_links[0]
+                link = "https://www.welcometothejungle.com" + title_link_element['href']
 
-                    if published_at < seven_days_ago: continue 
-
-                    all_links = card.find_all("a", href=lambda href: href and "/jobs/" in href)
-                    company_element = card.find("span", class_=lambda x: x and x.startswith('sc-'))
-                    if not all([all_links, company_element]): continue
-
-                    title_link_element = all_links[1] if len(all_links) > 1 else all_links[0]
-                    title = title_link_element.text.strip()
-                    link = "https://www.welcometothejungle.com" + title_link_element['href']
-                    company = company_element.text.strip()
-                    location_icon = card.find("i", attrs={"name": "location"})
-                    location = location_icon.find_next_sibling("p").text.strip() if location_icon and location_icon.find_next_sibling("p") else "N/A"
-                    salary_icon = card.find("i", attrs={"name": "salary"})
-                    salary = salary_icon.find_next_sibling("span").text.strip().replace('\xa0', ' ') if salary_icon and salary_icon.find_next_sibling("span") else None
-                    tags_list = []
-                    contract_icon = card.find("i", attrs={"name": "contract"})
-                    if contract_icon and contract_icon.find_next_sibling("span"): tags_list.append(contract_icon.find_next_sibling("span").text.strip())
-                    remote_icon = card.find("i", attrs={"name": "remote"})
-                    if remote_icon and remote_icon.find_next_sibling("span"): tags_list.append(remote_icon.find_next_sibling("span").text.strip())
-                    tags = ", ".join(tags_list) if tags_list else None
-                    logo_url = None
-                    all_images = card.select("img")
-                    if len(all_images) > 1 and all_images[1].get('src'): logo_url = all_images[1]['src']
-
-                    job_data = {"title": title, "company": company, "location": location, "link": link, "source": "Welcome to the Jungle", "published_at": published_at, "salary": salary, "tags": tags, "logo_url": logo_url}
-                    if save_job_to_db(job_data): page_new_jobs_count += 1
+                if link in processed_links:
+                    consecutive_duplicates += 1
+                    if consecutive_duplicates >= DUPLICATE_THRESHOLD:
+                        stop_scraping_site = True
+                        break
+                    continue
                 
-                if page_new_jobs_count > 0: db.session.commit()
-                new_jobs_count += page_new_jobs_count
+                consecutive_duplicates = 0
+                
+                title = title_link_element.text.strip()
+                company_element = card.find("span", class_=lambda x: x and x.startswith('sc-'))
+                company = company_element.text.strip() if company_element else "N/A"
+                time_element = card.find("time")
+                published_at = datetime.fromisoformat(time_element['datetime'].replace('Z', '+00:00')) if time_element else None
+                location = card.select_one("i[name='location'] + p").text.strip() if card.select_one("i[name='location'] + p") else "N/A"
+                salary_element = card.select_one("i[name='salary'] + span")
+                salary = salary_element.text.strip().replace('\xa0', ' ') if salary_element else None
+                tags_list = [span.text.strip() for span in card.select("i[name='contract'] + span, i[name='remote'] + span")]
+                tags = ", ".join(tags_list) if tags_list else None
+                all_images = card.select("img")
+                logo_url = all_images[1]['src'] if len(all_images) > 1 and all_images[1].get('src') else None
+
+                job_data = {"title": title, "company": company, "location": location, "link": link, "source": "Welcome to the Jungle", "published_at": published_at, "salary": salary, "tags": tags, "logo_url": logo_url}
+                all_jobs_data.append(job_data)
+                processed_links.add(link)
 
     except Exception as e: print(f"Erreur lors du scraping de WTTJ : {e}")
     finally:
         if driver: driver.quit()
-    print(f"WTTJ : {new_jobs_count} nouvelle(s) offre(s) récente(s) ajoutée(s).")
+        
+    if all_jobs_data:
+        all_jobs_data.reverse()
+        with app.app_context():
+            new_jobs_count = 0
+            for job_data in all_jobs_data:
+                if save_job_to_db(job_data): new_jobs_count += 1
+            db.session.commit()
+        print(f"WTTJ : {new_jobs_count} nouvelle(s) offre(s) ajoutée(s).")
 
-# --- SCRAPER POUR WEB3.CAREER (RETOUR À LA STRATÉGIE SIMPLE) ---
+
+# --- Web3.career (avec arrêt intelligent) ---
 def scrape_web3_career():
-    print("\n--- Début du scraping sur Web3.career (Liste uniquement) ---")
+    print("\n--- Début du scraping sur Web3.career ---")
     
-    NUM_PAGES_TO_SCRAPE = 5 # Vous pouvez ajuster ce nombre
+    NUM_PAGES_TO_SCRAPE = 10
+    DUPLICATE_THRESHOLD = 10
     BASE_URL = "https://web3.career/remote-jobs?page={}"
 
     driver = None
-    new_jobs_count = 0
+    all_jobs_data = []
+    stop_scraping_site = False
+
     try:
         chrome_options = Options()
         chrome_options.add_argument("--headless")
         chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
         driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=chrome_options)
         
-        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
-        stop_scraping_site = False
+        with app.app_context():
+            processed_links = {job.link for job in Job.query.filter_by(source='Web3.career').with_entities(Job.link).all()}
 
         for page_num in range(1, NUM_PAGES_TO_SCRAPE + 1):
-            if stop_scraping_site: break
+            if stop_scraping_site:
+                print("  [INFO] Seuil de doublons atteint. Arrêt pour Web3.career.")
+                break
 
             current_url = BASE_URL.format(page_num)
-            print(f"\nWeb3.career : Traitement de la page {page_num}/{NUM_PAGES_TO_SCRAPE}...")
-            
+            print(f"Web3.career : Traitement de la page {page_num}/{NUM_PAGES_TO_SCRAPE}...")
             driver.get(current_url)
+            
             try:
-                WebDriverWait(driver, 1
-                ).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "tr[data-jobid]")))
-                
+                WebDriverWait(driver, 15).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "tr[data-jobid]")))
             except Exception:
-                print(f"Web3.career : Aucune offre trouvée sur la page {page_num}. Arrêt.")
+                print(f"Web3.career : Aucune offre sur la page {page_num}. Arrêt.")
                 break
 
             soup = BeautifulSoup(driver.page_source, "html.parser")
             job_rows = soup.select("tbody > tr[data-jobid]")
-            print(f"Web3.career : {len(job_rows)} offres trouvées sur la page {page_num}.")
-
             if not job_rows: break
 
-            with app.app_context():
-                page_new_jobs_count = 0
-                for row in job_rows:
-                    time_element = row.find("time")
-                    published_at = None
-                    if time_element and 'datetime' in time_element.attrs:
-                        try:
-                            published_at = datetime.fromisoformat(time_element['datetime'].replace('Z', '+00:00'))
-                        except ValueError: pass
-                    
-                    if published_at and published_at < seven_days_ago:
-                        print("Web3.career : Offres trop anciennes atteintes. Arrêt du scraping pour ce site.")
+            consecutive_duplicates = 0
+            for row in job_rows:
+                link_attribute = row.get('onclick')
+                if not link_attribute: continue
+                link = "https://web3.career" + link_attribute.split("'")[1]
+
+                if link in processed_links:
+                    consecutive_duplicates += 1
+                    if consecutive_duplicates >= DUPLICATE_THRESHOLD:
                         stop_scraping_site = True
                         break
-
-                    link_attribute = row.get('onclick')
-                    title_element = row.find("h2")
-                    company_element = row.find("h3")
-                    if not all([link_attribute, title_element, company_element]): continue
-                    
-                    link = "https://web3.career" + link_attribute.split("'")[1]
-                    title = title_element.text.strip()
-                    company = company_element.text.strip()
-                    location_element = row.select_one("td.job-location-mobile a")
-                    location = location_element.text.strip() if location_element else "Remote"
-                    salary_element = row.select_one("p.text-salary")
-                    salary = salary_element.text.strip().replace('\n', ' ').replace('$', '$ ') if salary_element else None
-                    tag_elements = row.select("span.my-badge a")
-                    tags = ", ".join([tag.text.strip() for tag in tag_elements]) if tag_elements else None
-
-                    # On ne sauvegarde PAS la description ici
-                    job_data = {"title": title, "company": company, "location": location, "link": link, "source": "Web3.career", "published_at": published_at, "salary": salary, "tags": tags}
-                    if save_job_to_db(job_data):
-                        page_new_jobs_count += 1
+                    continue
                 
-                if page_new_jobs_count > 0:
-                    db.session.commit()
-                new_jobs_count += page_new_jobs_count
+                consecutive_duplicates = 0
+                
+                title_element = row.find("h2")
+                company_element = row.find("h3")
+                if not title_element or not company_element: continue
+
+                title = title_element.text.strip()
+                company = company_element.text.strip()
+                time_element = row.find("time")
+                published_at = datetime.fromisoformat(time_element['datetime'].replace('Z', '+00:00')) if time_element and 'datetime' in time_element.attrs else None
+                location_element = row.select_one("td.job-location-mobile a")
+                location = location_element.text.strip() if location_element else "Remote"
+                salary_element = row.select_one("p.text-salary")
+                salary = salary_element.text.strip().replace('\n', ' ').replace('$', '$ ') if salary_element else None
+                tag_elements = row.select("span.my-badge a")
+                tags = ", ".join([tag.text.strip() for tag in tag_elements]) if tag_elements else None
+
+                job_data = {"title": title, "company": company, "location": location, "link": link, "source": "Web3.career", "published_at": published_at, "salary": salary, "tags": tags}
+                all_jobs_data.append(job_data)
+                processed_links.add(link)
 
     except Exception as e: print(f"Erreur lors du scraping de Web3.career : {e}")
     finally:
         if driver: driver.quit()
-    print(f"Web3.career : {new_jobs_count} nouvelle(s) offre(s) récente(s) ajoutée(s) au total.")
-
+        
+    if all_jobs_data:
+        all_jobs_data.reverse()
+        with app.app_context():
+            new_jobs_count = 0
+            for job_data in all_jobs_data:
+                if save_job_to_db(job_data): new_jobs_count += 1
+            db.session.commit()
+        print(f"Web3.career : {new_jobs_count} nouvelle(s) offre(s) ajoutée(s).")
 
 
 # --- SCRAPER POUR CRYPTO CAREERS (STRATÉGIE "FERMER ET ROUVRIR") ---
@@ -310,7 +333,6 @@ def scrape_crypto_careers():
     print(f"\nCrypto Careers : {new_jobs_count} nouvelle(s) offre(s) récente(s) ajoutée(s) au total.")
 
 
-
 def scrape_cryptocurrency_jobs():
     print("\n--- Début du scraping sur Cryptocurrency Jobs ---")
     URL = "https://cryptocurrencyjobs.co/"
@@ -346,7 +368,6 @@ def scrape_cryptocurrency_jobs():
                 
                 if published_at and published_at < seven_days_ago: continue
                 
-                # ... le reste de la fonction ne change pas ...
                 title_link_element = card.select_one("h2 a")
                 company_element = card.select_one("h3 a")
                 if not all([title_link_element, company_element]): continue
@@ -374,7 +395,6 @@ def scrape_cryptocurrency_jobs():
         if driver: driver.quit()
     print(f"Cryptocurrency Jobs : {new_jobs_count} nouvelle(s) offre(s) récente(s) ajoutée(s).")
 
-# scraper.py (uniquement la fonction scrape_cryptojobslist)
 
 # --- SCRAPER POUR CRYPTOJOBSLIST (CORRECTION FINALE DE LA LOCALISATION) ---
 def scrape_cryptojobslist():
@@ -399,7 +419,6 @@ def scrape_cryptojobslist():
             
             WebDriverWait(driver, 1).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "tbody > tr")))
             
-
             soup = BeautifulSoup(driver.page_source, "html.parser")
             job_rows = soup.select("tbody > tr")
             print(f"Crypto Jobs List : {len(job_rows)} offres trouvées sur la page {page_num}.")
@@ -422,26 +441,17 @@ def scrape_cryptojobslist():
                     logo_url = logo_img.get('src') if logo_img and logo_img.get('src') else None
                     salary_element = row.select_one("svg[stroke='currentColor'] + span")
                     salary = salary_element.text.strip() if salary_element else None
-
-                    # --- LOGIQUE DE LOCALISATION ET TAGS CORRIGÉE ---
                     
-                    # 1. On récupère les tags "normaux"
                     tag_elements = row.select(".job-tags span.category")
                     tags_list = [tag.text.strip() for tag in tag_elements]
                     tags = ", ".join(tags_list) if tags_list else None
                     
-                    # 2. On récupère la localisation depuis sa cellule spécifique
-                    # Le sélecteur cible le span avec le point rose (le premier enfant de la td)
                     location_element = row.select_one("td > span.text-sm")
                     location = location_element.text.strip() if location_element else "N/A"
                     
-                    # 3. On vérifie si "Remote" est dans les tags pour être sûr
                     if 'Remote' in tags_list and location == 'N/A':
                         location = 'Remote'
 
-                    # ----------------------------------------------------
-
-                    # La logique de date reste la même
                     published_at = None
                     date_element = row.select_one("td.job-time-since-creation")
                     if date_element:
@@ -730,289 +740,225 @@ def scrape_laborx():
 
 
 
-# scraper.py (uniquement la fonction scrape_hellowork optimisée)
-
+# --- Hellowork (avec arrêt intelligent) ---
 def scrape_hellowork():
-    print("\n--- Début du scraping sur Hellowork (Version optimisée avec Selenium) ---")
-    
+    print("\n--- Début du scraping sur Hellowork ---")
     NUM_PAGES_TO_SCRAPE = 10 
+    DUPLICATE_THRESHOLD = 8
     BASE_URL = "https://www.hellowork.com/fr-fr/emploi/recherche.html?k=&st=date&c=CDI&d=w&t=Complet&p={}"
-    MAX_JOB_AGE_DAYS = 7
-    seven_days_ago = datetime.now(timezone.utc) - timedelta(days=MAX_JOB_AGE_DAYS)
-
     driver = None
-    new_jobs_count = 0
+    all_jobs_data = []
     stop_scraping_site = False
 
     try:
-        # NOTE : Pour une performance maximale, on passe à Selenium standard.
-        # AVERTISSEMENT : Si Hellowork met en place une protection anti-bot plus agressive,
-        # il faudra peut-être revenir à 'undetected_chromedriver'.
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
-        driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=chrome_options)
+        options = uc.ChromeOptions()
+        options.add_argument("--headless")
+        options.add_argument("--no-sandbox")
+        driver = uc.Chrome(options=options, use_subprocess=True, version_main=137)
 
-        # Flag pour ne gérer les cookies qu'une seule fois
-        cookies_handled = False
+        with app.app_context():
+            processed_links = {job.link.split('?')[0] for job in Job.query.filter_by(source='Hellowork').with_entities(Job.link).all()}
 
         for page_num in range(1, NUM_PAGES_TO_SCRAPE + 1):
-            if stop_scraping_site: 
+            if stop_scraping_site:
+                print("  [INFO] Seuil de doublons atteint. Arrêt pour Hellowork.")
                 break
             
             current_url = BASE_URL.format(page_num)
-            print(f"\nHellowork : Traitement de la page {page_num}/{NUM_PAGES_TO_SCRAPE}...")
+            print(f"Hellowork : Traitement de la page {page_num}/{NUM_PAGES_TO_SCRAPE}...")
             driver.get(current_url)
             
-            # --- GESTION OPTIMISÉE DES COOKIES ---
-            # On ne tente de cliquer que sur la première page.
-            if not cookies_handled:
-                try:
-                    # Temps d'attente pour les cookies réduit à 5 secondes.
-                    print("  [INFO] Tentative de gestion du bandeau de cookies (attente max 5s)...")
-                    cookie_button = WebDriverWait(driver, 1).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, "#hw-cc-notice-accept-btn"))
-                    )
-                    cookie_button.click()
-                    print("  [OK] Cookies acceptés.")
-                except Exception:
-                    print("  [INFO] Pas de bandeau de cookies trouvé ou cliquable dans le temps imparti.")
-                finally:
-                    # On ne réessaiera plus, même en cas d'échec.
-                    cookies_handled = True
-            
-            card_selector = "li[data-id-storage-target='item']"
-            try:
-                WebDriverWait(driver, 1).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, card_selector)))
-            except Exception:
-                print(f"Hellowork : Aucune offre sur la page {page_num}. Arrêt.")
-                break
+            try: WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.ID, "hw-cc-notice-accept-btn"))).click()
+            except: pass
+
+            try: WebDriverWait(driver, 15).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "li[data-id-storage-target='item']")))
+            except Exception: print(f"Hellowork : Aucune offre sur la page {page_num}. Arrêt."); break
 
             soup = BeautifulSoup(driver.page_source, "html.parser")
-            job_cards = soup.select(card_selector)
+            job_cards = soup.select("li[data-id-storage-target='item']")
             if not job_cards: break
-
-            print(f"  [INFO] {len(job_cards)} offres trouvées sur la page {page_num}.")
             
-            page_new_jobs_count = 0
-            with app.app_context():
-                # La logique d'extraction des offres reste identique
-                for card in job_cards:
-                    title_link = card.select_one('a[data-cy="offerTitle"]')
-                    if not title_link: continue
-                    
-                    title_element = title_link.select_one("h3 p")
-                    company_element = title_link.select_one("h3 p.tw-typo-s")
-                    location_element = card.select_one('div[data-cy="localisationCard"]')
-                    if not all([title_element, company_element, location_element]): continue
-
-                    raw_link = title_link['href']
-                    link = urllib.parse.urljoin(current_url, raw_link).split('?')[0]
-
-                    # On peut garder cette vérification pour éviter de traiter des offres déjà en DB
-                    if Job.query.filter_by(link=link).first():
-                        continue
-
-                    published_at = None
-                    date_element = card.select_one("div.tw-justify-between > div.tw-text-grey")
-                    if date_element:
-                        date_text = date_element.text.strip().lower()
-                        now = datetime.now(timezone.utc)
-                        try:
-                            if "instant" in date_text or "aujourd'hui" in date_text: published_at = now
-                            elif "moins d'une heure" in date_text or "minute" in date_text: published_at = now
-                            elif "heure" in date_text: published_at = now - timedelta(hours=int(re.search(r'\d+', date_text).group()))
-                            elif "hier" in date_text: published_at = now - timedelta(days=1)
-                            elif "jour" in date_text: published_at = now - timedelta(days=int(re.search(r'\d+', date_text).group()))
-                        except (ValueError, AttributeError, TypeError):
-                             pass
-                    
-                    if published_at and published_at < seven_days_ago:
-                        print(f"Hellowork : Offre trop ancienne trouvée ('{date_text}'). Arrêt du scraping.")
-                        stop_scraping_site = True
-                        break
-                    
-                    title = title_element.text.strip()
-                    company = company_element.text.strip()
-                    location = location_element.text.strip()
-                    
-                    logo_element = card.select_one("header img")
-                    logo_url = logo_element.get('src') if logo_element and 'http' in logo_element.get('src', '') else None
-                    salary_element = card.select_one('div[data-cy="contractCard"] + div')
-                    salary = salary_element.text.strip().replace("\xa0", " ") if salary_element and salary_element.text else None
-                    tags_list = []
-                    contract_card = card.select_one('div[data-cy="contractCard"]')
-                    if contract_card: tags_list.append(contract_card.text.strip())
-                    contract_tag = card.select_one('div[data-cy="contractTag"]')
-                    if contract_tag: tags_list.append(contract_tag.text.strip())
-                    tags = ", ".join(tags_list) if tags_list else None
-
-                    job_data = { "title": title, "company": company, "location": location, "link": link, "source": "Hellowork", "published_at": published_at, "salary": salary, "tags": tags, "logo_url": logo_url }
-
-                    if save_job_to_db(job_data):
-                        page_new_jobs_count += 1
+            consecutive_duplicates = 0
+            for card in job_cards:
+                title_link = card.select_one('a[data-cy="offerTitle"]')
+                if not title_link: continue
+                link = urllib.parse.urljoin(current_url, title_link['href']).split('?')[0]
                 
-                if page_new_jobs_count > 0:
-                    db.session.commit()
-                    print(f"  [DB] {page_new_jobs_count} nouvelle(s) offre(s) de cette page ajoutée(s).")
+                if link in processed_links:
+                    consecutive_duplicates += 1
+                    if consecutive_duplicates >= DUPLICATE_THRESHOLD:
+                        stop_scraping_site = True; break
+                    continue
+                consecutive_duplicates = 0
                 
-                new_jobs_count += page_new_jobs_count
-
-    except Exception as e:
-        print(f"Erreur lors du scraping de Hellowork : {e}")
+                title = card.select_one("h3 p:first-of-type").text.strip()
+                company = card.select_one("h3 p.tw-typo-s").text.strip()
+                location = card.select_one('div[data-cy="localisationCard"]').text.strip()
+                logo_url = card.select_one("header img")['src'] if card.select_one("header img") and 'http' in card.select_one("header img").get('src', '') else None
+                salary = card.select_one('div[data-cy="contractCard"] + div').text.strip().replace("\xa0", " ") if card.select_one('div[data-cy="contractCard"] + div') else None
+                tags = ", ".join([tag.text.strip() for tag in card.select('div[data-cy="contractCard"], div[data-cy="contractTag"]')])
+                published_at = None
+                date_element = card.select_one("div.tw-justify-between > div.tw-text-grey")
+                if date_element:
+                    date_text = date_element.text.strip().lower()
+                    now = datetime.now(timezone.utc)
+                    try:
+                        if "instant" in date_text or "aujourd'hui" in date_text: published_at = now
+                        elif "heure" in date_text: published_at = now - timedelta(hours=int(re.search(r'\d+', date_text).group()))
+                        elif "hier" in date_text: published_at = now - timedelta(days=1)
+                        elif "jour" in date_text: published_at = now - timedelta(days=int(re.search(r'\d+', date_text).group()))
+                    except: pass
+                
+                job_data = { "title": title, "company": company, "location": location, "link": link, "source": "Hellowork", "published_at": published_at, "salary": salary, "tags": tags, "logo_url": logo_url }
+                all_jobs_data.append(job_data)
+                processed_links.add(link)
+                
+    except Exception as e: print(f"Erreur lors du scraping de Hellowork : {e}")
     finally:
         if driver: driver.quit()
-    print(f"\nHellowork : {new_jobs_count} nouvelle(s) offre(s) récente(s) ajoutée(s) au total.")
 
+    if all_jobs_data:
+        all_jobs_data.reverse()
+        with app.app_context():
+            new_jobs_count = 0
+            for job_data in all_jobs_data:
+                if save_job_to_db(job_data): new_jobs_count += 1
+            db.session.commit()
+        print(f"Hellowork : {new_jobs_count} nouvelle(s) offre(s) ajoutée(s).")
 
 
 # Dans scraper.py
 
 def scrape_indeed():
-    print("\n--- Début du scraping sur Indeed (avec Tags et Inversion) ---")
-
-    RUN_HEADLESS = False
-    profile_path = os.path.abspath("chrome_profile_indeed")
-    print(f"[INFO] Utilisation du profil Chrome (déjà connecté) : {profile_path}")
-
-    TARGET_URL = "https://fr.indeed.com/jobs?q=&l=Télétravail&sort=date&fromage=7"
-    NUM_PAGES_TO_SCRAPE = 5
+    print("\n--- Début du scraping sur Indeed ---")
     
+    NUM_PAGES_TO_SCRAPE = 10
+    DUPLICATE_THRESHOLD = 10
+    TARGET_URL = "https://fr.indeed.com/jobs?q=&l=Télétravail&sort=date&fromage=7&radius=25&sc=0kf%3Aattr%285QWDV%7C8YWGX%7CCF3CP%7CT9BXE%252COR%29%3B&from=searchOnDesktopSerp&vjk=f7a9d0a1dbbb59ed"
     driver = None
     all_jobs_data = []
 
-    try:
-        # ... (la configuration du driver reste la même) ...
-        options = uc.ChromeOptions()
-        if RUN_HEADLESS:
-            options.add_argument("--headless")
-        
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument(f'--user-data-dir={profile_path}')
-        options.add_argument('--profile-directory=Default')
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--start-maximized")
-        
-        driver = uc.Chrome(options=options, use_subprocess=True, version_main=137)
-        
-        with app.app_context():
-            processed_links = {job.link for job in Job.query.filter_by(source='Indeed').with_entities(Job.link).all()}
-
-        for page_num in range(NUM_PAGES_TO_SCRAPE):
-            print(f"\nIndeed : Collecte sur la page {page_num + 1}/{NUM_PAGES_TO_SCRAPE}...")
-            # ... (la navigation et la gestion des pop-ups restent les mêmes) ...
-            if page_num == 0: current_url = TARGET_URL
-            else: current_url = f"{TARGET_URL}&start={page_num * 10}"
+    with app.app_context():
+        try:
+            profile_path = os.path.abspath("chrome_profile_indeed")
+            if not os.path.exists(profile_path):
+                print("[ERREUR] Profil Indeed non trouvé.")
+                return
             
-            driver.get(current_url)
+            options = uc.ChromeOptions()
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument(f'--user-data-dir={profile_path}')
+            options.add_argument('--profile-directory=Default')
+            options.add_argument("--window-size=1280,800")
+            driver = uc.Chrome(options=options, use_subprocess=True, version_main=137)
 
-            try:
-                close_button_selector = "button[aria-label='close'], button.icl-CloseButton"
-                close_button = WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.CSS_SELECTOR, close_button_selector)))
-                close_button.click()
-                print("  [INFO] Pop-up fermé.")
-            except Exception:
-                print("  [INFO] Pas de pop-up trouvé ou déjà fermé.")
-            card_selector = "div.job_seen_beacon"
-            try:
-                WebDriverWait(driver, 20).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, card_selector)))
-            except Exception:
-                print(f"  [AVERTISSEMENT] Aucune offre trouvée sur la page {page_num + 1}.")
-                driver.save_screenshot(f"indeed_debug_page_{page_num + 1}.png")
-                break
+            processed_jks = set()
+            existing_indeed_jobs = Job.query.filter_by(source='Indeed').with_entities(Job.link).all()
+            for job_tuple in existing_indeed_jobs:
+                job_link = job_tuple[0]
+                match = re.search(r'jk=([a-f0-9]+)', job_link)
+                if match:
+                    processed_jks.add(match.group(1))
+            print(f"[INFO] {len(processed_jks)} 'jk' Indeed déjà en base de données.")
             
-            soup = BeautifulSoup(driver.page_source, "html.parser")
-            job_cards = soup.select(card_selector)
-            if not job_cards: break
-            
-            print(f"  [INFO] {len(job_cards)} offres trouvées sur la page.")
-            
-            for card in job_cards:
-                title_element = card.select_one('h2.jobTitle span')
-                company_element = card.select_one('span[data-testid="company-name"]')
-                location_element = card.select_one('div[data-testid="text-location"]')
-                link_element = card.select_one('a.jcs-JobTitle')
-
-                if not all([title_element, company_element, location_element, link_element]): continue
+            stop_scraping_site = False
+            for page_num in range(NUM_PAGES_TO_SCRAPE):
+                if stop_scraping_site:
+                    print("  [INFO] Seuil de doublons atteint. Arrêt pour Indeed.")
+                    break
                 
-                relative_link = link_element['href']
-                link_key_match = re.search(r'jk=([a-f0-9]+)', relative_link)
-                if not link_key_match: continue
-                link = f"https://fr.indeed.com/viewjob?jk={link_key_match.group(1)}"
+                current_url = f"{TARGET_URL}&start={page_num * 10}" if page_num > 0 else TARGET_URL
+                print(f"Indeed : Traitement de la page {page_num + 1}/{NUM_PAGES_TO_SCRAPE}...")
+                driver.get(current_url)
                 
-                if link in processed_links: continue
-                
-                title = title_element.text.strip()
-                company = company_element.text.strip()
-                location = location_element.text.strip()
-                
-                # --- NOUVELLE LOGIQUE D'EXTRACTION DES TAGS ---
-                tags_list = []
-                # Sélecteur 1 : pour les div contenant du texte de tag
-                tag_divs = card.select("div[data-testid='attribute_snippet_testid']")
-                for div in tag_divs:
-                    tag_text = " ".join(div.stripped_strings).strip()
-                    if tag_text:
-                        tags_list.append(tag_text)
-                # Sélecteur 2 : pour les li étant directement des tags
-                tag_lis = card.select("li.css-5ooe72")
-                for li in tag_lis:
-                    tag_text = li.text.strip()
-                    if tag_text:
-                        tags_list.append(tag_text)
-                # On nettoie la liste des doublons et des éléments non pertinents
-                final_tags = [t for t in list(dict.fromkeys(tags_list)) if t]
-                tags = ", ".join(final_tags) if final_tags else None
-                # --------------------------------------------------
-
-                date_element = card.select_one('span.date')
-                date_text = date_element.text.strip().lower() if date_element else ""
-
-                published_at = None
-                now = datetime.now(timezone.utc)
+                time.sleep(2)
                 try:
-                    if "aujourd'hui" in date_text or "instant" in date_text: published_at = now
-                    elif "hier" in date_text: published_at = now - timedelta(days=1)
-                    elif "jour" in date_text:
-                        days_ago = int(re.search(r'\d+', date_text).group())
-                        if days_ago <= 7: published_at = now - timedelta(days=days_ago)
-                        else: continue
-                except (ValueError, AttributeError, TypeError): pass
+                    WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[aria-label='close']"))).click()
+                    time.sleep(1)
+                except: pass
                 
-                salary_element = card.select_one('div.salary-snippet-container')
-                salary = salary_element.text.strip().replace('\xa0', ' ') if salary_element else None
-                snippet_element = card.select_one('div.job-snippet')
-                description = snippet_element.text.strip().replace('\n', ' ') if snippet_element else None
-
-                job_data = {
-                    "title": title, "company": company, "location": location,
-                    "link": link, "source": "Indeed", "published_at": published_at,
-                    "salary": salary, "tags": tags, "logo_url": None,
-                    "description": description 
-                }
+                try:
+                    WebDriverWait(driver, 15).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.job_seen_beacon")))
+                except: break
                 
-                all_jobs_data.append(job_data)
+                soup = BeautifulSoup(driver.page_source, "html.parser")
+                job_cards = soup.select("div.job_seen_beacon")
+                if not job_cards: break
+                
+                consecutive_duplicates = 0
+                for card in job_cards:
+                    link_element = card.select_one('a.jcs-JobTitle')
+                    if not link_element or not link_element.has_attr('href'): continue
+                    
+                    link_key_match = re.search(r'jk=([a-f0-9]+)', link_element['href'])
+                    if not link_key_match: continue
+                    
+                    job_key = link_key_match.group(1)
+                    
+                    # --- CORRECTION ICI ---
+                    if job_key in processed_jks:
+                        consecutive_duplicates += 1
+                        if consecutive_duplicates >= DUPLICATE_THRESHOLD:
+                            stop_scraping_site = True; break
+                        continue
+                    # --------------------
+                    
+                    consecutive_duplicates = 0
+                    
+                    link = f"https://fr.indeed.com/viewjob?jk={job_key}"
+                    
+                    title_element = card.select_one('h2.jobTitle span')
+                    company_element = card.select_one('span[data-testid="company-name"]')
+                    location_element = card.select_one('div[data-testid="text-location"]')
+                    if not all([title_element, company_element, location_element]): continue
+                    
+                    title = title_element.text.strip()
+                    company = company_element.text.strip()
+                    location = location_element.text.strip()
+                    
+                    # --- Parsing complet (le reste est bon) ---
+                    tag_divs = card.select("div[data-testid='attribute_snippet_testid']")
+                    tag_lis = card.select("li.css-5ooe72")
+                    tags_list = [div.text.strip() for div in tag_divs if div.text.strip()] + [li.text.strip() for li in tag_lis if li.text.strip()]
+                    tags = ", ".join(list(dict.fromkeys(tags_list))) if tags_list else None
+                    date_element = card.select_one('span.date')
+                    published_at = None
+                    if date_element:
+                        date_text = date_element.text.strip().lower()
+                        now = datetime.now(timezone.utc)
+                        try:
+                            if "aujourd'hui" in date_text or "instant" in date_text: published_at = now
+                            elif "hier" in date_text: published_at = now - timedelta(days=1)
+                            elif "jour" in date_text: published_at = now - timedelta(days=int(re.search(r'\d+', date_text).group()))
+                        except: pass
+                    salary_element = card.select_one('div.salary-snippet-container')
+                    salary = salary_element.text.strip().replace('\xa0', ' ') if salary_element else None
+                    snippet_element = card.select_one('div.job-snippet')
+                    description = snippet_element.text.strip().replace('\n', ' ') if snippet_element else None
 
-    except Exception as e:
-        print(f"Erreur majeure lors du scraping de Indeed : {e}")
-    finally:
-        if driver:
-            driver.quit()
+                    job_data = {"title": title, "company": company, "location": location, "link": link, "source": "Indeed", "published_at": published_at, "salary": salary, "tags": tags, "description": description}
+                    all_jobs_data.append(job_data)
+                    
+                    # --- CORRECTION ICI ---
+                    processed_jks.add(job_key)
+                    # --------------------
 
-    if all_jobs_data:
-        print(f"\n[INFO] {len(all_jobs_data)} offres collectées. Inversion et enregistrement...")
-        all_jobs_data.reverse()
-        
-        with app.app_context():
+        except Exception as e:
+            print(f"Erreur majeure lors du scraping de Indeed : {e}")
+        finally:
+            if driver: driver.quit()
+
+        if all_jobs_data:
+            print(f"\n[INFO] {len(all_jobs_data)} offres collectées. Enregistrement...")
+            all_jobs_data.reverse()
             new_jobs_count = 0
             for job_data in all_jobs_data:
                 if save_job_to_db(job_data):
                     new_jobs_count += 1
             db.session.commit()
-            
-    print(f"\nIndeed : {new_jobs_count} nouvelle(s) offre(s) récente(s) ajoutée(s).")
+            print(f"Indeed : {new_jobs_count} nouvelle(s) offre(s) ajoutée(s).")
+        else:
+            print("\n[INFO] Aucune nouvelle offre trouvée pour Indeed.")
 
 
 # Dans scraper.py
@@ -1164,23 +1110,19 @@ def scrape_glassdoor():
 
 # --- SCRIPT PRINCIPAL ---
 if __name__ == '__main__':
-    if os.path.exists("jobs.db"):
-        os.remove("jobs.db")
-    
     with app.app_context():
         db.create_all()
     
-    scrape_wttj()
-    scrape_web3_career()
-    scrape_crypto_careers()
-    scrape_cryptocurrency_jobs()
-    scrape_cryptojobslist()
-    scrape_onchainjobs()
-    scrape_remote3()
-    scrape_laborx()
-    scrape_hellowork()
+    # scrape_wttj()
+    # scrape_web3_career()
+    # scrape_crypto_careers()
+    # scrape_cryptocurrency_jobs()
+    # scrape_cryptojobslist()
+    # scrape_onchainjobs()
+    # scrape_remote3()
+    # scrape_laborx()
+    # scrape_hellowork()
+    # scrape_glassdoor()
     scrape_indeed()
-    scrape_glassdoor()
-
     
     print("\nScraping de tous les sites terminé !")

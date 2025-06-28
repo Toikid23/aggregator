@@ -41,6 +41,10 @@ class Job(db.Model):
     logo_url = db.Column(db.String(300), nullable=True)
     description = db.Column(db.Text, nullable=True) # On a besoin de la colonne description
 
+    is_saved = db.Column(db.Boolean, default=False, nullable=False)
+    is_applied = db.Column(db.Boolean, default=False, nullable=False)
+    is_hidden = db.Column(db.Boolean, default=False, nullable=False)
+
 # --- Filtres de template (inchangés) ---
 @app.template_filter('time_ago')
 def time_ago(dt):
@@ -64,28 +68,61 @@ def to_paris_time(utc_dt):
     if utc_dt.tzinfo is None: utc_dt = utc_dt.replace(tzinfo=pytz.utc)
     return utc_dt.astimezone(paris_tz)
 
-# --- Route principale (inchangée) ---
+# Dans app.py
+
 @app.route('/')
 def index():
     sources_filter = request.args.getlist('source')
-    search_query = request.args.get('q', None)
-    query = Job.query
-    if sources_filter: query = query.filter(Job.source.in_(sources_filter))
+    search_query = request.args.get('q', '').strip() # On récupère et on nettoie
+    
+    # On ne montre que les offres "neuves"
+    query = Job.query.filter_by(
+        is_hidden=False, 
+        is_saved=False, 
+        is_applied=False
+    )
+    
+    if sources_filter: 
+        query = query.filter(Job.source.in_(sources_filter))
+    
+    # --- NOUVELLE LOGIQUE DE RECHERCHE MULTI-MOTS-CLÉS ---
     if search_query:
-        search_term = f"%{search_query.strip()}%"
-        query = query.filter(or_(Job.title.ilike(search_term), Job.company.ilike(search_term), Job.tags.ilike(search_term)))
+        # 1. On sépare les mots-clés. On peut utiliser l'espace comme séparateur.
+        #    On filtre les mots vides au cas où l'utilisateur mettrait plusieurs espaces.
+        keywords = [keyword for keyword in search_query.split(' ') if keyword]
+        
+        # 2. On crée une liste de conditions de filtre (une pour chaque mot-clé)
+        search_conditions = []
+        for keyword in keywords:
+            search_term = f"%{keyword}%"
+            # Chaque condition est un "OU" entre les colonnes title, company, et tags
+            condition = or_(
+                Job.title.ilike(search_term),
+                Job.company.ilike(search_term),
+                Job.tags.ilike(search_term)
+            )
+            search_conditions.append(condition)
+        
+        # 3. On applique toutes ces conditions avec un "OU" global.
+        #    L'offre doit correspondre à au moins une des recherches de mots-clés.
+        if search_conditions:
+            query = query.filter(or_(*search_conditions))
+    # ----------------------------------------------------
+    
     jobs = query.order_by(nullslast(desc(Job.published_at)), desc(Job.id)).all()
     all_sources_tuples = db.session.query(Job.source).distinct().all()
     all_sources = sorted([s[0] for s in all_sources_tuples])
+    
+    # On passe search_query au template pour qu'il reste dans la barre de recherche
     return render_template('index.html', jobs=jobs, all_sources=all_sources, selected_sources=sources_filter, search_query=search_query)
 
-# app.py
+
+
 
 @app.route('/job/<int:job_id>/details')
 def get_job_details(job_id):
     job = db.session.get(Job, job_id)
-    if not job:
-        return jsonify({'error': 'Job not found'}), 404
+    if not job: return jsonify({'error': 'Job not found'}), 404
     
     MIN_FULL_DESCRIPTION_LENGTH = 500
     if job.description and len(job.description) > MIN_FULL_DESCRIPTION_LENGTH:
@@ -93,34 +130,43 @@ def get_job_details(job_id):
     
     source = job.source
     wait_selector = None
-    description_selector = None # Sélecteur pour l'extraction
-
-    if source == 'Indeed':
-        wait_selector = '#jobDescriptionText, #mosaic-vjJobDetails'
-        description_selector = wait_selector
-    elif source == 'Glassdoor':
-        # On attend l'en-tête de la description
-        wait_selector = "header[data-test='job-details-header']"
-        # On extrait le conteneur de la description
-        description_selector = "div[class*='JobDetails_jobDescription']"
-    # ... autres sites ...
     
+    # Dictionnaire des sélecteurs de description pour chaque site
+    SELECTORS = {
+        'Indeed': "#jobDescriptionText",
+        'Glassdoor': "div[class*='JobDetails_jobDescription']", # Le sélecteur que vous avez identifié
+        'Crypto Careers': 'div.job-body',
+        'Crypto Jobs List': "div[class*='JobView_description']",
+        'Welcome to the Jungle': "div[data-testid='job-section-description']",
+        'Web3.career': 'div.text-dark-grey-text',
+        'Cryptocurrency Jobs': 'div.prose',
+        'Remote3': 'div[class^="RemoteJobs_jobDescription"]',
+        'LaborX': 'section.section-description',
+        'Hellowork': 'div[class*="lg:tw-col-span-8"] div.tw-flex.tw-flex-col',
+        'OnchainJobs': 'div.job_description'
+    }
+
+    wait_selector = SELECTORS.get(source)
     if not wait_selector:
         return jsonify({'description': '<p>Scraper non défini pour cette source.</p>'})
 
     driver = None
-    description = "<p>Détails non trouvés lors du scraping.</p>"
+    description = "<p>Détails non trouvés.</p>"
     try:
-        if source in ['Indeed', 'Glassdoor']:
-            profile_folder = "chrome_profile_indeed" if source == 'Indeed' else "chrome_profile_glassdoor"
+        print(f"API: Lancement scraper de détails pour '{source}' (offre {job_id})...")
+
+        PROTECTED_SITES = ['Indeed', 'Glassdoor', 'Crypto Careers']
+        if source in PROTECTED_SITES:
+            # ... (la logique de configuration du driver reste la même)
             options = uc.ChromeOptions()
-            profile_path = os.path.abspath(profile_folder)
-            options.add_argument(f'--user-data-dir={profile_path}')
-            options.add_argument('--profile-directory=Default')
+            if source in ['Indeed', 'Glassdoor']:
+                profile_folder = "chrome_profile_indeed" if source == 'Indeed' else "chrome_profile_glassdoor"
+                options.add_argument(f'--user-data-dir={os.path.abspath(profile_folder)}')
+                options.add_argument('--profile-directory=Default')
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--window-size=1024,768")
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-blink-features=AutomationControlled")
-            options.add_argument("--window-size=800,600")
             driver = uc.Chrome(options=options, use_subprocess=True, version_main=137)
         else:
             std_options = Options()
@@ -130,34 +176,134 @@ def get_job_details(job_id):
         
         driver.get(job.link)
         
-        print(f"API: Attente de la visibilité de '{wait_selector}'...")
-        WebDriverWait(driver, 1).until(
-            EC.visibility_of_element_located((By.CSS_SELECTOR, wait_selector))
-        )
-        print("API: Élément d'attente trouvé !")
-
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
-        description_element = soup.select_one(description_selector)
-
-        if description_element:
-            for tag in description_element.find_all(True):
-                if 'class' in tag.attrs: del tag.attrs['class']
-                if 'style' in tag.attrs: del tag.attrs['style']
-            description = str(description_element)
+        # --- LOGIQUE D'ATTENTE ADAPTÉE ---
+        # Par défaut, on attend la visibilité
+        wait_condition = EC.visibility_of_element_located((By.CSS_SELECTOR, wait_selector))
+        
+        # Pour les sites où l'élément peut être masqué, on attend juste sa présence
+        if source in ['Crypto Careers', 'Glassdoor']:
+            print(f"API ({source}): Utilisation de la condition d'attente 'presence_of_element_located'.")
+            wait_condition = EC.presence_of_element_located((By.CSS_SELECTOR, wait_selector))
+        
+        print(f"API: Attente de l'élément '{wait_selector}'...")
+        description_webelement = WebDriverWait(driver, 15).until(wait_condition)
+        
+        if description_webelement:
+            description_html = description_webelement.get_attribute('outerHTML')
+            soup_for_cleaning = BeautifulSoup(description_html, 'html.parser')
+            main_tag = soup_for_cleaning.find()
+            if main_tag:
+                for tag in main_tag.find_all(True):
+                    if 'class' in tag.attrs: del tag.attrs['class']
+                    if 'style' in tag.attrs: del tag.attrs['style']
+                description = str(main_tag)
+            else:
+                description = description_html
+            
             job.description = description
             db.session.commit()
             print(f"API: Description pour l'offre {job_id} ({source}) sauvegardée.")
         else:
-            print(f"API: Élément de description ('{description_selector}') introuvable après l'attente.")
+            print(f"API: Élément de description introuvable.")
         
     except Exception as e:
-        print(f"API: Erreur scraping détails pour l'offre {job_id} ({source}): {e}")
-        description = f"<p>Une erreur est survenue.</p>"
+        print(f"API: Erreur scraping détails pour offre {job_id} ({source}): {e}")
     finally:
         if driver:
             driver.quit()
     
     return jsonify({'description': description})
+
+
+# Dans app.py
+
+@app.route('/job/<int:job_id>/toggle_save', methods=['POST'])
+def toggle_save_job(job_id):
+    job = db.session.get(Job, job_id)
+    if not job:
+        return jsonify({'success': False, 'error': 'Job not found'}), 404
+    
+    # On stocke l'état ACTUEL avant de le changer
+    was_saved = job.is_saved
+    
+    # On inverse la valeur
+    job.is_saved = not job.is_saved
+    
+    # Si on dés-enregistre une offre, elle ne peut plus être considérée comme postulée
+    if not job.is_saved:
+        job.is_applied = False
+        
+    db.session.commit()
+    
+    # On retourne le nouvel état, et une information sur ce qui s'est passé
+    return jsonify({
+        'success': True, 
+        'is_saved': job.is_saved,
+        'is_applied': job.is_applied,
+        'is_saved_toggled_off': was_saved and not job.is_saved # ex: True and not False -> True
+    })
+
+@app.route('/job/<int:job_id>/toggle_apply', methods=['POST'])
+def toggle_apply_job(job_id):
+    job = db.session.get(Job, job_id)
+    if not job:
+        return jsonify({'success': False, 'error': 'Job not found'}), 404
+    
+    job.is_applied = not job.is_applied
+    
+    # Si on marque une offre comme "postulée", elle doit aussi être "enregistrée"
+    if job.is_applied:
+        job.is_saved = True
+        
+    db.session.commit()
+    return jsonify({
+        'success': True,
+        'is_saved': job.is_saved,
+        'is_applied': job.is_applied,
+        'is_applied_toggled': True
+    })
+
+
+# Dans app.py
+
+# --- NOUVELLE ROUTE API POUR IGNORER ---
+@app.route('/job/<int:job_id>/toggle_hide', methods=['POST'])
+def toggle_hide_job(job_id):
+    job = db.session.get(Job, job_id)
+    if not job:
+        return jsonify({'success': False, 'error': 'Job not found'}), 404
+    
+    job.is_hidden = not job.is_hidden
+    db.session.commit()
+    return jsonify({
+        'success': True, 
+        'is_hidden': job.is_hidden,
+        'is_hidden_toggled': True # On signale que le statut "ignoré" a changé
+    })
+
+
+# --- NOUVELLE PAGE POUR LES OFFRES IGNORÉES ---
+@app.route('/hidden')
+def hidden_jobs():
+    jobs = Job.query.filter_by(is_hidden=True).order_by(desc(Job.id)).all()
+    return render_template('index.html', jobs=jobs, page_title="Offres Ignorées")
+
+
+
+# --- MODIFIER LA ROUTE DES OFFRES ENREGISTRÉES ---
+@app.route('/saved')
+def saved_jobs():
+    # On affiche les offres enregistrées QUI NE SONT PAS POSTULÉES et QUI NE SONT PAS IGNORÉES
+    jobs = Job.query.filter_by(is_saved=True, is_applied=False, is_hidden=False).order_by(nullslast(desc(Job.published_at)), desc(Job.id)).all()
+    return render_template('index.html', jobs=jobs, page_title="Offres Enregistrées")
+
+
+# --- MODIFIER LA ROUTE DES OFFRES POSTULÉES ---
+@app.route('/applied')
+def applied_jobs():
+    # On affiche les offres postulées QUI NE SONT PAS IGNORÉES
+    jobs = Job.query.filter_by(is_applied=True, is_hidden=False).order_by(nullslast(desc(Job.published_at)), desc(Job.id)).all()
+    return render_template('index.html', jobs=jobs, page_title="Offres Postulées")
 
 # --- Lancement de l'application ---
 if __name__ == '__main__':
