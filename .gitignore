@@ -26,7 +26,7 @@ remote3_debug_page.html
 .idea/
 
 # Dossiers de profil de navigateur
-chrome_profil_indeed/
+chrome_profile_indeed/
 
 # Fichiers d'erreur ou captures d'écran
 *.png
