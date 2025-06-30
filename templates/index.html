@@ -17,12 +17,12 @@
             margin: 0; 
             background-color: var(--light-gray); 
             color: var(--text-color); 
-            overflow: hidden; /* Empêche le scroll sur la page entière */
+            overflow: hidden;
         }
         
         .page-container { display: flex; flex-direction: column; height: 100vh; }
 
-        /* --- NOUVEL EN-TÊTE --- */
+        /* --- EN-TÊTE --- */
         .main-header {
             display: flex;
             align-items: center;
@@ -30,6 +30,7 @@
             padding: 0.75em 1.5em;
             background: #fff;
             border-bottom: 1px solid var(--border-color);
+            flex-shrink: 0;
         }
         .main-header .logo-area a {
             font-weight: bold;
@@ -69,11 +70,12 @@
             line-height: 1;
         }
 
-        /* --- NOUVEAUX FILTRES --- */
+        /* --- FILTRES --- */
         .filters-container {
             padding: 0.75em 1.5em;
             background: #fafafa;
             border-bottom: 1px solid var(--border-color);
+            flex-shrink: 0;
         }
         .filters-form {
             display: flex;
@@ -112,33 +114,91 @@
             color: var(--primary-color);
         }
 
-        /* --- Le reste est majoritairement inchangé --- */
+        /* --- CONTENU PRINCIPAL --- */
         .grid-container { display: grid; grid-template-columns: 45% 1fr; flex-grow: 1; overflow: hidden; }
         .jobs-column { overflow-y: auto; padding: 1em; }
         .details-column { overflow-y: auto; padding: 1.5em; background-color: #ffffff; border-left: 1px solid var(--border-color); }
         .details-column-placeholder { display: flex; align-items: center; justify-content: center; height: 100%; color: #888; font-size: 1.2em; }
         .job-list { list-style-type: none; padding: 0; margin: 0; }
-        /* ... (tous les autres styles, job-item, etc. restent les mêmes) ... */
-        .job-item { position: relative; background: white; border: 1px solid var(--border-color); border-left-width: 5px; padding: 1em 1.5em; margin-bottom: 1em; border-radius: 5px; cursor: pointer; transition: all 0.2s; }
+        
+        /* --- CARTE D'OFFRE --- */
+        .job-item { 
+            position: relative; 
+            background: white; 
+            border: 1px solid var(--border-color); 
+            border-left-width: 5px; 
+            padding: 1em 1.5em; 
+            margin-bottom: 1em; 
+            border-radius: 5px; 
+            cursor: pointer; 
+            transition: all 0.2s; 
+        }
         .job-item:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.08); transform: translateY(-2px); }
-        .job-item.active {
-            border-color: #0056b3;
+        
+        .job-item.active { 
+            border-color: var(--primary-color); 
             box-shadow: 0 4px 12px rgba(0, 86, 179, 0.15);
         }
-        .job-item.viewed {
-            background-color: #fffde7; /* Un jaune pâle et discret */
+        .job-item.viewed { background-color: #fffde7; }
+        .job-item.active.viewed, .job-item.active:hover { background-color: white; }
+        .job-item.hidden-by-company { display: none; }
+        
+        /* Classes de sources (bordure gauche) */
+        .job-source-welcome-to-the-jungle { border-left-color: #ffcd00; }
+        .job-source-web3-career { border-left-color: #E6007A; }
+        .job-source-crypto-careers { border-left-color: #16C784; }
+        .job-source-cryptocurrency-jobs { border-left-color: #6c5ce7; }
+        .job-source-crypto-jobs-list { border-left-color: #f7931a; }
+        .job-source-onchainjobs { border-left-color: #3eecac; }
+        .job-source-remote3 { border-left-color: #2f839c; }
+        .job-source-laborx { border-left-color: #95b2e0; }
+        .job-source-hellowork { border-left-color: #ba54e9; }
+        .job-source-indeed { border-left-color: #003a9b; }
+        .job-source-glassdoor { border-left-color: #0caa41; }
+        
+        .job-card-content { display: flex; align-items: flex-start; margin-bottom: 0.5em; }
+
+        /* --- CORRECTION POUR LE LOGO --- */
+        .job-logo-container {
+            width: 40px;
+            height: 40px;
+            border-radius: 6px;
+            margin-right: 1em;
+            flex-shrink: 0;
+            background-color: #f8f9fa; /* Fond gris clair pour les placeholders */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
         }
-        /* On s'assure que l'offre active n'est pas jaune, mais blanche */
-        .job-item.active.viewed, .job-item.active:hover {
-            background-color: white; 
+        .job-logo {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
         }
+        /* ------------------------------ */
+
+        .job-details { flex-grow: 1; min-width: 0; }
+        .job-item h2 { margin: 0 0 5px 0; font-size: 1.1em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .job-item h2 a { text-decoration: none; color: var(--primary-color); }
+        .job-meta { color: var(--text-muted); font-size: 0.85em; }
+        .job-meta p { margin: 4px 0; }
+        .job-source { font-size: 0.75em; font-weight: bold; color: #888; float: right; }
+        .job-date { cursor: help; border-bottom: 1px dotted #888; }
+        .job-tags { margin-top: 0.5em; }
+        .tag { display: inline-block; background-color: #eef1f4; color: #555; padding: 4px 10px; border-radius: 15px; font-size: 0.8em; margin-right: 5px; margin-bottom: 5px; }
+        
         .hide-company-btn { position: absolute; top: 5px; right: 5px; cursor: pointer; font-size: 1.2em; color: #aaa; padding: 2px 5px; border-radius: 3px; line-height: 1; transition: all 0.2s; }
         .hide-company-btn:hover { color: #333; background-color: #f0f0f0; }
-        .job-item.hidden-by-company { display: none; }
+
         .job-actions { display: flex; gap: 10px; margin-top: 1em; padding-top: 1em; border-top: 1px solid #f0f0f0; }
         .job-actions button { padding: 6px 12px; border: 1px solid #ccc; background-color: #f7f7f7; cursor: pointer; border-radius: 4px; font-size: 0.8em; transition: all 0.2s; }
         .job-actions button:hover { background-color: #e9e9e9; border-color: #bbb; }
         .job-actions button.active { background-color: #d1e7fd; border-color: #0d6efd; color: #0a58ca; font-weight: bold; }
+        
+        .details-column h2, .details-column h3, .details-column p, .details-column li, .details-column a { word-break: break-word; }
+        .details-column a { color: var(--primary-color); }
 
     </style>
 </head>
@@ -197,12 +257,17 @@
 
                             <span class="hide-company-btn" title="Cacher toutes les offres de {{ job.company }}">×</span>
                             
+                            <!-- NOUVEAU CODE CORRIGÉ -->
                             <div class="job-card-content">
-                                {% if job.logo_url %}
-                                    <img src="{{ job.logo_url }}" alt="{{ job.company }} logo" class="job-logo">
-                                {% else %}
-                                    <div class="job-logo-placeholder"></div>
-                                {% endif %}
+
+                                <!-- On enveloppe l'image ou le placeholder dans une seule div conteneur -->
+                                <div class="job-logo-container">
+                                    {% if job.logo_url %}
+                                        <img src="{{ job.logo_url }}" alt="{{ job.company }} logo" class="job-logo">
+                                    {% endif %}
+                                    <!-- Il n'y a plus besoin de 'job-logo-placeholder', le conteneur vide sert de placeholder -->
+                                </div>
+                                
                                 <div class="job-details">
                                     <span class="job-source">{{ job.source }}</span>
                                     <h2>{{ job.title }}</h2>
@@ -212,6 +277,7 @@
                                         <p><small class="job-date" title="Publiée le {{ ((job.published_at or job.date_added)|to_paris_time).strftime('%d/%m/%Y %H:%M') if (job.published_at or job.date_added) else '' }}">{{ (job.published_at or job.date_added)|time_ago }}</small></p>
                                     </div>
                                 </div>
+
                             </div>
 
                             {% if job.tags %}<div class="job-tags">{% for tag in job.tags.split(',') %}<span class="tag">{{ tag.strip() }}</span>{% endfor %}</div>{% endif %}
