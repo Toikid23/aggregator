@@ -551,7 +551,7 @@ def scrape_remote3():
     new_jobs_count = 0
     try:
         chrome_options = Options()
-        chrome_options.add_argument("--headless")
+        # chrome_options.add_argument("--headless")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--window-size=1920,1080")
         chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
@@ -1024,6 +1024,8 @@ def scrape_glassdoor():
         with app.app_context():
             processed_links = {job.link for job in Job.query.filter_by(source='Glassdoor').with_entities(Job.link).all()}
             
+            session_links = set()
+
             for card in job_cards:
                 title_link_element = card.select_one("a[data-test='job-title']")
                 company_element = card.select_one("div[class*='EmployerProfile_employerNameContainer']")
@@ -1041,6 +1043,9 @@ def scrape_glassdoor():
                 # ---------------------------------------------
 
                 if link in processed_links: 
+                    continue
+
+                if link in session_links:
                     continue
                     
                 title = title_link_element.text.strip()
@@ -1085,7 +1090,9 @@ def scrape_glassdoor():
                 
                 job_data = { "title": title, "company": company, "location": location, "link": link, "source": "Glassdoor", "published_at": published_at, "salary": salary, "tags": None, "logo_url": logo_url, "description": None }
                 all_jobs_data.append(job_data)
-        
+                processed_links.add(link)
+                session_links.add(link)
+
         if all_jobs_data:
             print(f"  [INFO] {len(all_jobs_data)} offres valides prêtes pour la BDD.")
             all_jobs_data.reverse()
