@@ -1,0 +1,26 @@
+# Fichiers et dossiers Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Dossiers d'environnement virtuel
+venv/
+.venv/
+env/
+.env
+
+# Fichiers de base de données
+*.db
+*.sqlite3
+
+# Fichiers générés par des outils (comme votre profil Chrome)
+# C'est la ligne la plus importante pour vous !
+chrome_profile_glassdoor/
+
+# Fichiers de débogage ou temporaires
+remote3_debug_page.html
+
+# Dossiers liés à l'éditeur de code
+.vscode/
+.idea/
