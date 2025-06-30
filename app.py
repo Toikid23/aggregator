@@ -122,19 +122,43 @@ def index():
 @app.route('/job/<int:job_id>/details')
 def get_job_details(job_id):
     job = db.session.get(Job, job_id)
-    if not job: return jsonify({'error': 'Job not found'}), 404
+    if not job: 
+        return jsonify({'error': 'Job not found'}), 404
     
+    # --- NOUVELLE LOGIQUE : TROUVER LES OFFRES SIMILAIRES ---
+    similar_jobs_data = []
+    if job.company != 'N/A':
+        similar_jobs_query = Job.query.filter(
+            Job.company == job.company,
+            Job.id != job.id,
+            Job.is_hidden == False,
+            Job.is_applied == False
+        ).order_by(nullslast(desc(Job.published_at))).limit(5)
+        
+        similar_jobs = similar_jobs_query.all()
+        similar_jobs_data = [{
+            'id': s_job.id,
+            'title': s_job.title,
+            'location': s_job.location,
+            'link': s_job.link
+        } for s_job in similar_jobs]
+    # --------------------------------------------------------
+
+    # On vérifie si la description est déjà en cache
     MIN_FULL_DESCRIPTION_LENGTH = 500
     if job.description and len(job.description) > MIN_FULL_DESCRIPTION_LENGTH:
-        return jsonify({'description': job.description})
+        print(f"API: Description pour ID {job.id} trouvée en cache.")
+        return jsonify({
+            'description': job.description,
+            'similar_jobs': similar_jobs_data
+        })
     
     source = job.source
-    wait_selector = None
     
-    # Dictionnaire des sélecteurs de description pour chaque site
+    # --- CORRECTION : DÉFINITION DE SELECTORS AVANT UTILISATION ---
     SELECTORS = {
         'Indeed': "#jobDescriptionText",
-        'Glassdoor': "div[class*='JobDetails_jobDescription']", # Le sélecteur que vous avez identifié
+        'Glassdoor': "div[class*='JobDetails_jobDescription']",
         'Crypto Careers': 'div.job-body',
         'Crypto Jobs List': "div[class*='JobView_description']",
         'Welcome to the Jungle': "div[data-testid='job-section-description']",
@@ -145,10 +169,16 @@ def get_job_details(job_id):
         'Hellowork': 'div[class*="lg:tw-col-span-8"] div.tw-flex.tw-flex-col',
         'OnchainJobs': 'div.job_description'
     }
-
+    
     wait_selector = SELECTORS.get(source)
+    # --------------------------------------------------------------
+    
     if not wait_selector:
-        return jsonify({'description': '<p>Scraper non défini pour cette source.</p>'})
+        # On renvoie la description vide mais aussi les offres similaires trouvées
+        return jsonify({
+            'description': '<p>Scraper non défini pour cette source.</p>',
+            'similar_jobs': similar_jobs_data
+        })
 
     driver = None
     description = "<p>Détails non trouvés.</p>"
@@ -212,7 +242,10 @@ def get_job_details(job_id):
         if driver:
             driver.quit()
     
-    return jsonify({'description': description})
+    return jsonify({
+        'description': description,
+        'similar_jobs': similar_jobs_data
+    })
 
 
 # Dans app.py

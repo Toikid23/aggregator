@@ -200,6 +200,46 @@
         .details-column h2, .details-column h3, .details-column p, .details-column li, .details-column a { word-break: break-word; }
         .details-column a { color: var(--primary-color); }
 
+        /* Dans la balise <style> de index.html */
+
+        /* Styles pour les offres similaires */
+        .similar-jobs-container {
+            margin-top: 2em;
+            padding-top: 1.5em;
+            border-top: 1px solid var(--border-color);
+        }
+        .similar-jobs-container h4 {
+            margin-top: 0;
+            margin-bottom: 1em;
+            font-size: 1.1em;
+            color: var(--text-muted);
+        }
+        .similar-jobs-list {
+            list-style-type: none;
+            padding: 0;
+            margin: 0;
+        }
+        .similar-job-item a {
+            display: block;
+            padding: 0.75em;
+            border-radius: 6px;
+            text-decoration: none;
+            color: var(--primary-color);
+            margin-bottom: 0.5em;
+            transition: background-color 0.2s;
+        }
+        .similar-job-item a:hover {
+            background-color: var(--light-gray);
+        }
+        .similar-job-item .title {
+            font-weight: 500;
+        }
+        .similar-job-item .location {
+            font-size: 0.85em;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
     </style>
 </head>
 <body>
@@ -458,11 +498,9 @@
             item.addEventListener('click', function() {
                 if (this.classList.contains('hidden-by-company')) return;
 
-                // --- AJOUT DE LA LOGIQUE "VIEWED" ---
                 const jobId = this.dataset.jobId;
-                this.classList.add('viewed'); // Applique le style immédiatement
-                addViewedJob(jobId); // Enregistre dans le localStorage
-                // ------------------------------------
+                this.classList.add('viewed');
+                addViewedJob(jobId);
 
                 if (activeJobItem) activeJobItem.classList.remove('active');
                 this.classList.add('active');
@@ -472,34 +510,62 @@
                 const jobCompany = this.dataset.companyName;
                 const jobLink = this.dataset.jobLink;
 
+                // --- MODIFICATION DE LA LOGIQUE DE CACHE ET D'AFFICHAGE ---
                 if (jobDescriptionCache[jobId]) {
-                    updateDetailsPanel(jobTitle, jobCompany, jobLink, jobDescriptionCache[jobId]);
+                    // On récupère l'objet complet depuis le cache
+                    const cachedData = jobDescriptionCache[jobId];
+                    updateDetailsPanel(jobTitle, jobCompany, jobLink, cachedData.description, cachedData.similar_jobs);
                 } else {
                     detailsPanel.innerHTML = `<h2><a href="${jobLink}" target="_blank" rel="noopener noreferrer">${jobTitle}</a></h2><h3>${jobCompany}</h3><hr><p>Chargement...</p>`;
                     fetch(`/job/${jobId}/details`)
                         .then(response => response.json())
                         .then(data => {
-                            jobDescriptionCache[jobId] = data.description;
-                            updateDetailsPanel(jobTitle, jobCompany, jobLink, data.description);
+                            // On met en cache l'objet complet (description + offres similaires)
+                            jobDescriptionCache[jobId] = data; 
+                            updateDetailsPanel(jobTitle, jobCompany, jobLink, data.description, data.similar_jobs);
                         });
                 }
             });
         });
         
-        function updateDetailsPanel(title, company, link, descriptionHtml) {
-            detailsPanel.innerHTML = `<h2><a href="${link}" target="_blank" rel="noopener noreferrer">${title}</a></h2><h3>${company}</h3><hr>${descriptionHtml}`;
+        // --- MODIFICATION DE LA FONCTION D'AFFICHAGE ---
+        function updateDetailsPanel(title, company, link, descriptionHtml, similarJobs) {
+            let similarJobsHtml = '';
+            
+            // On construit la section des offres similaires si elle existe
+            if (similarJobs && similarJobs.length > 0) {
+                similarJobsHtml = `
+                    <div class="similar-jobs-container">
+                        <h4>Plus d'offres chez ${company}</h4>
+                        <ul class="similar-jobs-list">
+                `;
+                similarJobs.forEach(job => {
+                    similarJobsHtml += `
+                        <li class="similar-job-item">
+                            <a href="${job.link}" target="_blank" rel="noopener noreferrer">
+                                <span class="title">${job.title}</span>
+                                <span class="location">${job.location}</span>
+                            </a>
+                        </li>
+                    `;
+                });
+                similarJobsHtml += '</ul></div>';
+            }
+            
+            // On assemble le HTML final
+            detailsPanel.innerHTML = `
+                <h2><a href="${link}" target="_blank" rel="noopener noreferrer">${title}</a></h2>
+                <h3>${company}</h3>
+                <hr>
+                ${descriptionHtml}
+                ${similarJobsHtml}
+            `;
             detailsPanel.scrollTop = 0;
         }
 
-        // ----- INITIALISATION AU CHARGEMENT DE LA PAGE -----
-        applyCompanyFilters();
-        applyViewedStatus();
-        // Attacher les écouteurs pour les filtres de source
-        document.querySelectorAll('input[name="source"]').forEach(checkbox => {
-            checkbox.addEventListener('change', () => document.getElementById('filter-form').submit());
-        });
+        // ... (le reste de votre script d'initialisation)
     });
-    </script>
+</script>
 </body>
 </html>
 
