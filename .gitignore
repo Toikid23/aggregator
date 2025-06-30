@@ -24,3 +24,9 @@ remote3_debug_page.html
 # Dossiers liés à l'éditeur de code
 .vscode/
 .idea/
+
+# Dossiers de profil de navigateur
+chrome_profil_indeed/
+
+# Fichiers d'erreur ou captures d'écran
+*.png
