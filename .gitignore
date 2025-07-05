@@ -30,3 +30,33 @@ chrome_profile_indeed/
 
 # Fichiers d'erreur ou captures d'écran
 *.png
+
+
+# .gitignore
+
+# Environnements virtuels Python
+venv/
+venv_win/
+__pycache__/
+
+# Fichiers de base de données SQLite
+*.db
+*.db-journal
+
+# Fichiers générés par PyInstaller
+dist/
+build/
+*.spec
+
+# Fichiers de log ou de debug
+*.log
+*.png
+*.html # Si tu as des pages de debug HTML
+
+# Profils de navigateur pour Selenium
+chrome_profile_indeed/
+chrome_profile_glassdoor/
+
+# Fichiers de l'éditeur (optionnel, mais bonne pratique)
+.vscode/
+.idea/

@@ -3,11 +3,12 @@
 import os
 import pytz
 import undetected_chromedriver as uc
+import json
 from selenium.webdriver.chrome.options import Options 
 from datetime import datetime, timezone
 from flask import Flask, render_template, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import desc, nullslast, or_
+from sqlalchemy import desc, nullslast, or_, Text
 
 # Imports nécessaires pour le scraping à la demande
 import time
@@ -19,6 +20,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
+from sqlalchemy import desc, nullslast, or_, Text, func
 
 # --- Configuration et Modèles ---
 app = Flask(__name__)
@@ -44,6 +46,34 @@ class Job(db.Model):
     is_saved = db.Column(db.Boolean, default=False, nullable=False)
     is_applied = db.Column(db.Boolean, default=False, nullable=False)
     is_hidden = db.Column(db.Boolean, default=False, nullable=False)
+
+    # --- NOUVEAUX CHAMPS POUR L'ANALYSE IA ---
+    is_analyzed = db.Column(db.Boolean, default=False, nullable=False, index=True)
+    ai_score = db.Column(db.Integer, nullable=True)
+    ai_verdict = db.Column(db.String(100), nullable=True)
+    ai_analysis_json = db.Column(Text, nullable=True)
+    # ----------------------------------------
+
+@app.context_processor
+def inject_stats():
+    # On s'assure de ne pas planter si la DB n'est pas encore créée
+    try:
+        total_jobs = db.session.query(Job).count()
+        saved_jobs = db.session.query(Job).filter_by(is_saved=True, is_applied=False, is_hidden=False).count()
+        applied_jobs_count = db.session.query(Job).filter_by(is_applied=True, is_hidden=False).count()
+        hidden_jobs_count = db.session.query(Job).filter_by(is_hidden=True).count()
+        analyzed_jobs_count = db.session.query(Job).filter(Job.is_analyzed==True, Job.is_hidden==False).count()
+    except Exception:
+        # En cas d'erreur (par ex. la table n'existe pas), on retourne 0
+        total_jobs, saved_jobs, applied_jobs_count, hidden_jobs_count, analyzed_jobs_count = 0, 0, 0, 0, 0
+
+    return dict(
+        stats_total=total_jobs,
+        stats_saved=saved_jobs,
+        stats_applied=applied_jobs_count,
+        stats_hidden=hidden_jobs_count,
+        stats_analyzed=analyzed_jobs_count
+    )
 
 # --- Filtres de template (inchangés) ---
 @app.template_filter('time_ago')
@@ -109,7 +139,11 @@ def index():
             query = query.filter(or_(*search_conditions))
     # ----------------------------------------------------
     
-    jobs = query.order_by(nullslast(desc(Job.published_at)), desc(Job.id)).all()
+    # NOUVELLE LIGNE DANS app.py -> fonction index()
+ 
+    jobs = query.order_by(
+        desc(func.coalesce(Job.published_at, Job.date_added))
+    ).all()
     all_sources_tuples = db.session.query(Job.source).distinct().all()
     all_sources = sorted([s[0] for s in all_sources_tuples])
     
@@ -320,6 +354,22 @@ def toggle_hide_job(job_id):
 def hidden_jobs():
     jobs = Job.query.filter_by(is_hidden=True).order_by(desc(Job.id)).all()
     return render_template('index.html', jobs=jobs, page_title="Offres Ignorées")
+
+
+@app.route('/analyzed')
+def analyzed_jobs():
+    # On récupère les offres qui ont été analysées,
+    # qui ne sont ni cachées, ni déjà postulées.
+    # On les trie par score décroissant.
+    jobs = Job.query.filter(
+        Job.is_analyzed == True,
+        Job.is_hidden == False,
+        Job.is_applied == False,
+        Job.ai_score != None # S'assurer qu'il y a un score
+    ).order_by(desc(Job.ai_score)).all()
+    
+    # On réutilise le template index.html, en lui passant un titre de page spécifique.
+    return render_template('index.html', jobs=jobs, page_title="Offres analysées par l'IA")
 
 
 

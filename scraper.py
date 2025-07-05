@@ -57,7 +57,9 @@ def save_job_to_db(job_data):
             return False
     return False
 
-# --- Welcome to the Jungle (avec arrêt intelligent) ---
+# scraper.py
+
+# --- Welcome to the Jungle (Ton code original + debug screenshot) ---
 def scrape_wttj():
     print("\n--- Début du scraping sur Welcome to the Jungle ---")
     NUM_PAGES_TO_SCRAPE = 10
@@ -72,10 +74,13 @@ def scrape_wttj():
         chrome_options = Options()
         chrome_options.add_argument("--headless")
         chrome_options.add_argument("--no-sandbox")
+        # --- AJOUT : Un User-Agent est toujours une bonne pratique ---
+        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
         driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=chrome_options)
         
         with app.app_context():
-            processed_links = {job.link for job in Job.query.filter_by(source='Welcome to the Jungle').with_entities(Job.link).all()}
+            # Correction mineure : on s'assure de nettoyer les liens des paramètres de tracking
+            processed_links = {job.link.split('?')[0] for job in Job.query.filter_by(source='Welcome to the Jungle').with_entities(Job.link).all()}
 
         for page_num in range(1, NUM_PAGES_TO_SCRAPE + 1):
             if stop_scraping_site:
@@ -86,11 +91,24 @@ def scrape_wttj():
             print(f"WTTJ : Traitement de la page {page_num}/{NUM_PAGES_TO_SCRAPE}...")
             driver.get(current_url)
 
+            # --- AJOUT MINIMAL ET RAPIDE : GESTION DES COOKIES ---
+            # On tente de cliquer sur le bouton s'il apparaît, sans ralentir le script.
+            try:
+                # On utilise une attente très courte.
+                cookie_button = WebDriverWait(driver, 3).until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler")))
+                cookie_button.click()
+                print("  [INFO] Bannière de cookies cliquée.")
+            except Exception:
+                # S'il n'y a pas de bouton, on continue sans perdre de temps.
+                pass
+            # --------------------------------------------------------
+
             job_cards_selector = "li[data-testid='search-results-list-item-wrapper']"
             try:
                 WebDriverWait(driver, 15).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, job_cards_selector)))
             except Exception:
                 print(f"WTTJ : Aucune offre sur la page {page_num}. Arrêt.")
+                print(f"  [DEBUG] Échec de la détection des offres.")
                 break
 
             soup = BeautifulSoup(driver.page_source, "html.parser")
@@ -101,8 +119,10 @@ def scrape_wttj():
             for card in job_cards:
                 all_links = card.select("a[href*='/jobs/']")
                 if not all_links: continue
+                
                 title_link_element = all_links[1] if len(all_links) > 1 else all_links[0]
-                link = "https://www.welcometothejungle.com" + title_link_element['href']
+                # On nettoie le lien des paramètres de tracking
+                link = ("https://www.welcometothejungle.com" + title_link_element['href']).split('?')[0]
 
                 if link in processed_links:
                     consecutive_duplicates += 1
@@ -118,17 +138,18 @@ def scrape_wttj():
                 company = company_element.text.strip() if company_element else "N/A"
                 time_element = card.find("time")
                 published_at = datetime.fromisoformat(time_element['datetime'].replace('Z', '+00:00')) if time_element else None
-                location = card.select_one("i[name='location'] + p").text.strip() if card.select_one("i[name='location'] + p") else "N/A"
+                location_element = card.select_one("i[name='location'] + p")
+                location = location_element.text.strip() if location_element else "N/A"
                 salary_element = card.select_one("i[name='salary'] + span")
                 salary = salary_element.text.strip().replace('\xa0', ' ') if salary_element else None
-                tags_list = [span.text.strip() for span in card.select("i[name='contract'] + span, i[name='remote'] + span")]
-                tags = ", ".join(tags_list) if tags_list else None
+                tags_elements = card.select("i[name='contract'] + span, i[name='remote'] + span")
+                tags = ", ".join([tag.text.strip() for tag in tags_elements]) if tags_elements else None
                 all_images = card.select("img")
                 logo_url = all_images[1]['src'] if len(all_images) > 1 and all_images[1].get('src') else None
 
                 job_data = {"title": title, "company": company, "location": location, "link": link, "source": "Welcome to the Jungle", "published_at": published_at, "salary": salary, "tags": tags, "logo_url": logo_url}
                 all_jobs_data.append(job_data)
-                processed_links.add(link)
+                processed_links.add(link) # Important d'ajouter le lien nettoyé
 
     except Exception as e: print(f"Erreur lors du scraping de WTTJ : {e}")
     finally:
@@ -740,7 +761,9 @@ def scrape_laborx():
 
 
 
-# --- Hellowork (avec arrêt intelligent) ---
+# scraper.py
+
+# --- Hellowork (CORRIGÉ avec des vérifications de sécurité) ---
 def scrape_hellowork():
     print("\n--- Début du scraping sur Hellowork ---")
     NUM_PAGES_TO_SCRAPE = 10 
@@ -754,7 +777,7 @@ def scrape_hellowork():
         options = uc.ChromeOptions()
         options.add_argument("--headless")
         options.add_argument("--no-sandbox")
-        driver = uc.Chrome(options=options, use_subprocess=True, version_main=137)
+        driver = uc.Chrome(options=options, use_subprocess=True, version_main=137) # J'ai enlevé la version forcée pour plus de compatibilité
 
         with app.app_context():
             processed_links = {job.link.split('?')[0] for job in Job.query.filter_by(source='Hellowork').with_entities(Job.link).all()}
@@ -771,8 +794,10 @@ def scrape_hellowork():
             try: WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.ID, "hw-cc-notice-accept-btn"))).click()
             except: pass
 
-            try: WebDriverWait(driver, 15).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "li[data-id-storage-target='item']")))
-            except Exception: print(f"Hellowork : Aucune offre sur la page {page_num}. Arrêt."); break
+            try: WebDriverWait(driver, 5).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "li[data-id-storage-target='item']")))
+            except Exception: 
+                print(f"Hellowork : Aucune offre sur la page {page_num}. Arrêt.")
+                break
 
             soup = BeautifulSoup(driver.page_source, "html.parser")
             job_cards = soup.select("li[data-id-storage-target='item']")
@@ -781,7 +806,10 @@ def scrape_hellowork():
             consecutive_duplicates = 0
             for card in job_cards:
                 title_link = card.select_one('a[data-cy="offerTitle"]')
-                if not title_link: continue
+                # --- Condition de garde principale ---
+                if not title_link: 
+                    continue # Si pas de lien, on passe à l'offre suivante
+                
                 link = urllib.parse.urljoin(current_url, title_link['href']).split('?')[0]
                 
                 if link in processed_links:
@@ -791,12 +819,25 @@ def scrape_hellowork():
                     continue
                 consecutive_duplicates = 0
                 
-                title = card.select_one("h3 p:first-of-type").text.strip()
-                company = card.select_one("h3 p.tw-typo-s").text.strip()
-                location = card.select_one('div[data-cy="localisationCard"]').text.strip()
-                logo_url = card.select_one("header img")['src'] if card.select_one("header img") and 'http' in card.select_one("header img").get('src', '') else None
-                salary = card.select_one('div[data-cy="contractCard"] + div').text.strip().replace("\xa0", " ") if card.select_one('div[data-cy="contractCard"] + div') else None
-                tags = ", ".join([tag.text.strip() for tag in card.select('div[data-cy="contractCard"], div[data-cy="contractTag"]')])
+                # --- Vérifications pour chaque élément ---
+                title_element = card.select_one("h3 p:first-of-type")
+                title = title_element.text.strip() if title_element else "Titre non trouvé"
+
+                company_element = card.select_one("h3 p.tw-typo-s")
+                company = company_element.text.strip() if company_element else "Entreprise non trouvée"
+
+                location_element = card.select_one('div[data-cy="localisationCard"]')
+                location = location_element.text.strip() if location_element else "Lieu non trouvé"
+                
+                logo_img = card.select_one("header img")
+                logo_url = logo_img['src'] if logo_img and 'http' in logo_img.get('src', '') else None
+                
+                salary_element = card.select_one('div[data-cy="contractCard"] + div')
+                salary = salary_element.text.strip().replace("\xa0", " ") if salary_element else None
+                
+                tags_elements = card.select('div[data-cy="contractCard"], div[data-cy="contractTag"]')
+                tags = ", ".join([tag.text.strip() for tag in tags_elements]) if tags_elements else None
+                
                 published_at = None
                 date_element = card.select_one("div.tw-justify-between > div.tw-text-grey")
                 if date_element:
@@ -989,12 +1030,14 @@ def scrape_glassdoor():
         driver.get(TARGET_URL)
 
         try:
-            driver.find_element(By.ID, "onetrust-accept-btn-handler").click()
+            WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
             print("  [INFO] Bannière de cookies fermée.")
+            time.sleep(1) # Laisse le temps au DOM de se stabiliser
         except Exception:
-            pass # Pas de bannière, on continue
+            pass
         
-        WebDriverWait(driver, 1).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "li[data-jobid]")))
+        job_card_selector = "li[data-jobid]"
+        WebDriverWait(driver, 20).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, job_card_selector)))
         print("  [INFO] Offres initiales chargées.")
 
         load_more_button_selector = "button[data-test='load-more']"
@@ -1002,17 +1045,33 @@ def scrape_glassdoor():
         
         for i in range(NUM_CLICKS):
             try:
+                # --- LOGIQUE D'ATTENTE AMÉLIORÉE ---
+                
+                # 1. On compte combien d'offres on a AVANT de cliquer
+                initial_job_count = len(driver.find_elements(By.CSS_SELECTOR, job_card_selector))
+                
+                # 2. On clique sur le bouton "Voir plus"
                 driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                load_more_button = WebDriverWait(driver, 1).until(EC.element_to_be_clickable((By.CSS_SELECTOR, load_more_button_selector)))
+                load_more_button = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CSS_SELECTOR, load_more_button_selector)))
                 load_more_button.click()
                 print(f"  [INFO] Clic n°{i + 1}/{NUM_CLICKS} sur 'Voir plus'.")
-                time.sleep(1.5)
+
+                # 3. On attend DYNAMIQUEMENT que le nombre d'offres ait augmenté
+                WebDriverWait(driver, 10).until(
+                    lambda d: len(d.find_elements(By.CSS_SELECTOR, job_card_selector)) > initial_job_count
+                )
+                print(f"    [+] {len(driver.find_elements(By.CSS_SELECTOR, job_card_selector))} offres visibles.")
+                
+                # 4. On gère le popup (s'il apparaît)
                 try:
                     driver.find_element(By.CSS_SELECTOR, close_popup_selector).click()
                     print("    [+] Pop-up 'Job Alert' fermé.")
-                except Exception: pass
+                except Exception:
+                    pass
+                # --------------------------------------
+
             except Exception:
-                print("  [INFO] Le bouton 'Voir plus' n'est plus disponible.")
+                print("  [INFO] Le bouton 'Voir plus' n'est plus disponible ou le chargement a échoué.")
                 break
         
         print("\n  [INFO] Scraping de l'ensemble de la page...")
@@ -1115,21 +1174,51 @@ def scrape_glassdoor():
 
 
 
-# --- SCRIPT PRINCIPAL ---
-if __name__ == '__main__':
+# scraper.py
+
+def run_all_scrapers(qthread=None): # La signature est déjà correcte
+    """Fonction principale qui lance tous les scrapers et retourne un résumé."""
+    
+    summary = {}
     with app.app_context():
         db.create_all()
     
-    scrape_wttj()
-    scrape_web3_career()
-    scrape_crypto_careers()
-    scrape_cryptocurrency_jobs()
-    scrape_cryptojobslist()
-    scrape_onchainjobs()
-    scrape_remote3()
-    scrape_laborx()
-    scrape_hellowork()
-    scrape_glassdoor()
-    scrape_indeed()
-    
-    print("\nScraping de tous les sites terminé !")
+    scrapers_to_run = [
+        scrape_wttj, scrape_web3_career, scrape_crypto_careers, 
+        scrape_cryptocurrency_jobs, scrape_cryptojobslist, scrape_onchainjobs,
+        scrape_remote3, scrape_laborx, scrape_hellowork, 
+        scrape_glassdoor, scrape_indeed
+    ]
+
+    for scraper_func in scrapers_to_run:
+        # --- AJOUT : Vérification de l'arrêt avant chaque scraper ---
+        if qthread and not qthread.is_running:
+            print("\n--- [!] Arrêt du scraping demandé par l'utilisateur. ---")
+            break # On sort de la boucle for
+        # -----------------------------------------------------------
+
+        site_name = scraper_func.__name__.replace('scrape_', '').replace('_', ' ').title()
+        # Le reste de la boucle est inchangé...
+        print(f"\n--- Lancement du scraper pour {site_name} ---")
+        try:
+            with app.app_context():
+                count_before = db.session.query(Job).count()
+            scraper_func()
+            with app.app_context():
+                count_after = db.session.query(Job).count()
+            new_jobs = count_after - count_before
+            summary[site_name] = f"{new_jobs} nouvelle(s) offre(s) trouvée(s)."
+            print(f"--- {site_name} terminé : {new_jobs} offre(s) ajoutée(s). ---")
+        except Exception as e:
+            error_message = f"ÉCHEC - Erreur : {e}"
+            summary[site_name] = error_message
+            print(f"\n[ERREUR FATALE] Le scraper {site_name} a échoué : {e}")
+            continue
+
+    final_message = "\n--- Scraping de tous les sites terminé ! ---"
+    print(final_message)
+    return summary
+
+
+if __name__ == '__main__':
+    run_all_scrapers()
