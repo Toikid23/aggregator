@@ -1184,10 +1184,17 @@ def run_all_scrapers(qthread=None): # La signature est déjà correcte
         db.create_all()
     
     scrapers_to_run = [
-        scrape_wttj, scrape_web3_career, scrape_crypto_careers, 
-        scrape_cryptocurrency_jobs, scrape_cryptojobslist, scrape_onchainjobs,
-        scrape_remote3, scrape_laborx, scrape_hellowork, 
-        scrape_glassdoor, scrape_indeed
+        # scrape_wttj,
+        # scrape_web3_career,
+        # scrape_crypto_careers, 
+        # scrape_cryptocurrency_jobs,
+        # scrape_cryptojobslist,
+        # scrape_onchainjobs,
+        # scrape_remote3,
+        # scrape_laborx,
+        # scrape_hellowork, 
+        scrape_glassdoor,
+        scrape_indeed
     ]
 
     for scraper_func in scrapers_to_run:
